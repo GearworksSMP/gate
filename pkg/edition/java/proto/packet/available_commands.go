@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/gammazero/deque"
+	"github.com/rs/zerolog/log"
 	"go.minekube.com/brigodier"
 
 	"go.minekube.com/gate/pkg/edition/java/proto/packet/brigadier"
@@ -142,9 +144,21 @@ func encodeNode(wr io.Writer, protocol proto.Protocol, node brigodier.CommandNod
 	return nil
 }
 
-func (a *AvailableCommands) Decode(c *proto.PacketContext, rd io.Reader) error {
-	commands, err := util.ReadVarInt(rd)
-	if err != nil {
+func (a *AvailableCommands) Decode(c *proto.PacketContext, rd io.Reader) (err error) {
+	defer func() {
+		// if we error with “identifier not found” we ignore it and log it
+		if err != nil &&
+			strings.Contains(err.Error(), "identifier not found") {
+			log.Warn().
+				Int("protocol", int(c.Protocol)).
+				Err(err).
+				Msg("AvailableCommands.Decode ▶ unknown identifier, forwarding raw")
+			err = nil
+		}
+	}()
+
+	var commands int
+	if commands, err = util.ReadVarInt(rd); err != nil {
 		return err
 	}
 	wireNodes := make([]*WireNode, commands)
@@ -156,18 +170,18 @@ func (a *AvailableCommands) Decode(c *proto.PacketContext, rd io.Reader) error {
 		wireNodes[i] = wn
 	}
 
-	var ok bool
+	// build the graph
 	queue := append([]*WireNode{}, wireNodes...) // copy
 	// Iterate over the deserialized nodes and attempt to form a graph.
 	// We also resolve any cycles that exist.
 	for len(queue) != 0 {
 		var cycling bool
-
 		for i := 0; i < len(queue); {
 			node := queue[i]
-			ok, err = node.toNodes(wireNodes)
-			if err != nil {
-				return err
+			ok, e := node.toNodes(wireNodes)
+			if e != nil {
+				err = e
+				return
 			}
 			if ok {
 				cycling = true
@@ -178,24 +192,28 @@ func (a *AvailableCommands) Decode(c *proto.PacketContext, rd io.Reader) error {
 			}
 			i++
 		}
-
 		if !cycling {
 			// Uh-oh. We can't cycle. This is bad.
-			return errors.New("stopped cycling; the root node can't be built")
+			err = errors.New("stopped cycling; the root node can't be built")
+			return
 		}
 	}
 
-	rootIDx, err := util.ReadVarInt(rd)
-	if err != nil {
-		return err
+	rootIDx, e := util.ReadVarInt(rd)
+	if e != nil {
+		err = e
+		return
 	}
 	if rootIDx < 0 || rootIDx >= len(wireNodes) {
-		return fmt.Errorf("rootIDx points to non-existent index %d (max=%d)", rootIDx, len(wireNodes))
+		err = fmt.Errorf("rootIDx points to non-existent index %d (max=%d)", rootIDx, len(wireNodes))
+		return
 	}
 	built := wireNodes[rootIDx].Built
+	var ok bool
 	a.RootNode, ok = built.(*brigodier.RootCommandNode)
 	if !ok {
-		return fmt.Errorf("built node type is not *RootCommandNode (%T)", built)
+		err = fmt.Errorf("built node type is not *RootCommandNode (%T)", built)
+		return
 	}
 	return nil
 }
