@@ -8,7 +8,9 @@ import (
 	"io"
 )
 
-const MaxLengthPacks = 64
+// Vanilla is 64 by default but for modded connections this may need to be set higher, usually it is recommended to increase this by 1 per mod
+// TODO make this configurable
+const MaxLengthPacks = 256
 
 // ErrTooManyPacks is returned when sends too many packs.
 var ErrTooManyPacks = errs.NewSilentErr("too many packs")
